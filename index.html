@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Local Typing Trainer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="app-header">
+      <h1>Local Typing Trainer</h1>
+      <div class="stage-info">
+        <span id="stage-name"></span>
+        <span id="active-keys-label">Active keys: <span id="active-keys"></span></span>
+      </div>
+    </header>
+
+    <main class="app-main">
+      <!-- Center: text + keyboard -->
+      <section class="typing-panel">
+        <div class="typing-header">
+          <button id="restart-session-btn">Restart Session</button>
+          <button id="new-text-btn">New Text</button>
+        </div>
+
+        <!-- Pseudo words / text to type -->
+        <div id="typing-area" class="typing-area" tabindex="0">
+          <div id="generated-text" class="typing-text"></div>
+          <div class="hint">Click here, then start typing. No input box needed.</div>
+        </div>
+
+        <!-- Small status line just under the typing text -->
+        <div class="status-bar">
+          <span id="cursor-position"></span>
+          <span id="progress-percent"></span>
+        </div>
+
+        <!-- On-screen keyboard, centered -->
+        <div class="keyboard-panel">
+          <h2>On-screen Keyboard</h2>
+          <div id="keyboard-visual" class="keyboard"></div>
+          <div class="keyboard-legend">
+            <span class="legend-item">
+              <span class="legend-key legend-key-home"></span> Home row
+            </span>
+            <span class="legend-item">
+              <span class="legend-key legend-key-unlocked"></span> Unlocked key
+            </span>
+            <span class="legend-item">
+              <span class="legend-key legend-key-locked"></span> Locked key
+            </span>
+            <span class="legend-item">
+              <span class="legend-key legend-key-current"></span> Current target
+            </span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Scrollable stuff below -->
+      <section class="stats-panel">
+        <h2>Session Stats</h2>
+        <div class="stats-grid">
+          <div class="stat-item">
+            <label>Elapsed</label>
+            <span id="stat-elapsed">0s</span>
+          </div>
+          <div class="stat-item">
+            <label>Gross WPM</label>
+            <span id="stat-gross-wpm">0</span>
+          </div>
+          <div class="stat-item">
+            <label>Net WPM</label>
+            <span id="stat-net-wpm">0</span>
+          </div>
+          <div class="stat-item">
+            <label>Accuracy</label>
+            <span id="stat-accuracy">100%</span>
+          </div>
+          <div class="stat-item">
+            <label>Keystrokes</label>
+            <span id="stat-keystrokes">0</span>
+          </div>
+          <div class="stat-item">
+            <label>Errors</label>
+            <span id="stat-errors">0</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="stats-panel">
+        <h2>Per-Character</h2>
+        <table class="char-table">
+          <thead>
+            <tr>
+              <th>Key</th>
+              <th>Attempts</th>
+              <th>Errors</th>
+              <th>Accuracy</th>
+              <th>Avg RT (ms)</th>
+            </tr>
+          </thead>
+          <tbody id="char-stats-body">
+            <!-- Filled by JS -->
+          </tbody>
+        </table>
+      </section>
+
+      <section class="settings-panel">
+        <h2>Settings</h2>
+        <div class="setting-item">
+          <label>
+            <input type="checkbox" id="setting-sound-error" />
+            Sound on error
+          </label>
+        </div>
+        <div class="setting-item">
+          <label for="setting-backspace-mode">Backspace mode</label>
+          <select id="setting-backspace-mode">
+            <option value="discouraged">Discouraged (ignored)</option>
+            <option value="allowed">Allowed (moves cursor only)</option>
+          </select>
+        </div>
+
+        <div class="setting-item">
+          <label for="setting-keyboard-layout">Keyboard layout</label>
+          <select id="setting-keyboard-layout">
+            <option value="normal">Normal QWERTY</option>
+            <option value="split-straight">Split – straight rows</option>
+            <option value="split-offset">Split – staggered rows</option>
+          </select>
+        </div>
+
+        <div class="setting-item">
+          <label for="setting-font-size">Text size</label>
+          <input type="range" id="setting-font-size" min="18" max="48" value="32" />
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="main.js"></script>
+</body>
+</html>
