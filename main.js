@@ -1,63 +1,46 @@
 "use strict";
 
-const STORAGE_KEY = "localKeybrTrainerStateV1";
+const STORAGE_KEY = "localKeybrTrainerStateV2_oneKeyUnlock";
 
 /**
- * Stages:
- *  - Each stage defines a *new* group of keys to focus on.
- *  - unlockedChars is the union of all stages up to currentStageIndex.
+ * Start with BOTH home rows: asdfjkl;
+ * Then unlock one key at a time, in a sensible order.
+ *
+ * You can reorder this list later; just keep it to letters/punctuation you want to unlock.
  */
-const KEY_STAGES = [
-  {
-    id: "home-full",
-    name: "Home Row - Full",
-    keys: "asdfjkl;"
-  },
-  {
-    id: "home-center",
-    name: "Home Row - Center (G, H)",
-    keys: "gh"
-  },
-  {
-    id: "top-inner",
-    name: "Top Row - Inner (R T Y U)",
-    keys: "rtyu"
-  },
-  {
-    id: "top-outer",
-    name: "Top Row - Outer (Q W E I O)",
-    keys: "qweio"
-  },
-  {
-    id: "top-edge",
-    name: "Top Row - Edge (P)",
-    keys: "p"
-  },
-  {
-    id: "bottom-inner",
-    name: "Bottom Row - Inner (V B N)",
-    keys: "vbn"
-  },
-  {
-    id: "bottom-outer",
-    name: "Bottom Row - Outer (Z X C M)",
-    keys: "zxcm"
-  },
-  {
-    id: "bottom-edge",
-    name: "Bottom Row - Edge (, . /)",
-    keys: ",./"
-  }
+const START_UNLOCKED = "asdfjkl;";
+
+const UNLOCK_ORDER = [
+  // finish home row:
+  "g", "h",
+  // top row (center-ish first):
+  "r", "t", "y", "u",
+  "e", "i",
+  "w", "o",
+  "q", "p",
+  // bottom row:
+  "v", "b", "n",
+  "c", "m",
+  "x", "z",
+  // common punctuation near letters:
+  "'", ",", ".", "/"
 ];
 
-const PROGRESSION_CONFIG = {
-  minAttemptsPerChar: 40,
-  minAccuracy: 0.93,
-  regressMinAttemptsPerChar: 60,
-  regressAccuracy: 0.85
+const PROGRESSION = {
+  // Mastery required to unlock NEXT key:
+  minAttempts: 60,
+  minRecentAccuracy: 0.93,
+
+  // “Maintain” threshold: if user starts struggling, we stop unlocking and bias practice toward weak keys
+  maintainRecentAccuracy: 0.86,
+
+  recentWindow: 50
 };
 
-/* Keyboard layouts */
+const KEYBOARD_LAYOUTS = {
+  normal: { type: "normal" },
+  "split-straight": { type: "splitStraight" }
+};
 
 // Full normal QWERTY rows
 const NORMAL_KEYBOARD_ROWS = [
@@ -67,7 +50,6 @@ const NORMAL_KEYBOARD_ROWS = [
   ["z", "x", "c", "v", "b", "n", "m", ",", ".", "/"]
 ];
 
-// Split halves (letters + nearby punctuation)
 const SPLIT_LEFT_ROWS = [
   ["q", "w", "e", "r", "t"],
   ["a", "s", "d", "f", "g"],
@@ -80,29 +62,32 @@ const SPLIT_RIGHT_ROWS = [
   ["n", "m", ",", ".", "/"]
 ];
 
-const KEYBOARD_LAYOUTS = {
-  "normal": { type: "normal" },
-  "split-straight": { type: "splitStraight" }
-};
-
 let state = {
-  currentStageIndex: 0,
-  unlockedChars: "asdfjkl;",                // full home row to start
-  newestStageChars: new Set("asdfjkl;"),
+  unlocked: START_UNLOCKED,
+  nextUnlockIndex: 0,          // points into UNLOCK_ORDER
+  focusKey: null,              // newest unlocked (or weakest), used for stage name + weighting
   text: "",
   cursorPos: 0,
+
   session: {
     startedAt: null,
     lastKeyTime: null,
     elapsedMs: 0,
     keystrokes: 0,
-    errors: 0
+    errors: 0,
+
+    // time series for charts (sampled ~1/sec)
+    samples: [] // [{tSec, grossWpm, netWpm, acc}]
   },
+
+  // per-key stats:
+  // key -> { attempts, errors, totalRT, rtSamples, recent: [0/1 correct flags] }
   charStats: {},
+
   settings: {
     soundOnError: false,
     backspaceMode: "discouraged",
-    fontSize: 32,
+    fontSize: 34,
     keyboardLayout: "normal"
   }
 };
@@ -110,7 +95,6 @@ let state = {
 let dom = {};
 let audioCtx = null;
 
-// Safe init
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", init);
 } else {
@@ -120,16 +104,16 @@ if (document.readyState === "loading") {
 function init() {
   cacheDom();
   loadState();
-  prepareNewestStageSet();
-  state.unlockedChars = computeUnlockedCharsUpTo(state.currentStageIndex);
+  normalizeUnlockIndex();
+  if (!state.focusKey) {
+    state.focusKey = getNewestUnlockedKey();
+  }
   buildKeyboardBase();
   applySettingsToUI();
   attachListeners();
   generateNewText();
   renderAll();
 }
-
-/* DOM / SETUP */
 
 function cacheDom() {
   dom.stageName = document.getElementById("stage-name");
@@ -145,6 +129,7 @@ function cacheDom() {
   dom.statAccuracy = document.getElementById("stat-accuracy");
   dom.statKeystrokes = document.getElementById("stat-keystrokes");
   dom.statErrors = document.getElementById("stat-errors");
+
   dom.charStatsBody = document.getElementById("char-stats-body");
 
   dom.restartSessionBtn = document.getElementById("restart-session-btn");
@@ -156,15 +141,13 @@ function cacheDom() {
   dom.settingKeyboardLayout = document.getElementById("setting-keyboard-layout");
 
   dom.keyboardVisual = document.getElementById("keyboard-visual");
+
+  dom.chartWpm = document.getElementById("chart-wpm");
+  dom.chartAcc = document.getElementById("chart-acc");
 }
 
 function attachListeners() {
-  if (!dom.typingArea) return;
-
-  dom.typingArea.addEventListener("click", () => {
-    dom.typingArea.focus();
-  });
-
+  dom.typingArea.addEventListener("click", () => dom.typingArea.focus());
   document.addEventListener("keydown", handleKeydown);
 
   dom.restartSessionBtn.addEventListener("click", () => {
@@ -190,29 +173,37 @@ function attachListeners() {
   });
 
   dom.settingFontSize.addEventListener("input", () => {
-    const size = parseInt(dom.settingFontSize.value, 10) || 32;
+    const size = parseInt(dom.settingFontSize.value, 10) || 34;
     state.settings.fontSize = size;
     dom.generatedText.style.fontSize = size + "px";
     saveState();
   });
 
   dom.settingKeyboardLayout.addEventListener("change", () => {
-    const value = dom.settingKeyboardLayout.value || "normal";
-    state.settings.keyboardLayout = value;
+    state.settings.keyboardLayout = dom.settingKeyboardLayout.value || "normal";
     saveState();
     buildKeyboardBase();
     renderKeyboardDynamic();
   });
 }
 
-/* MAIN INPUT HANDLER */
-
 function handleKeydown(e) {
-  if (e.metaKey || e.ctrlKey || e.altKey) {
-    return;
-  }
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
 
   const key = e.key;
+    // Prevent Space from scrolling the page while typing
+  const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : "";
+  const isFormField =
+    tag === "input" ||
+    tag === "textarea" ||
+    tag === "select" ||
+    (e.target && e.target.isContentEditable);
+
+  // Space can show up as " " (modern) or "Spacebar" (older)
+  if (!isFormField && (key === " " || key === "Spacebar")) {
+    e.preventDefault();
+  }
+
 
   if (key === "Tab") {
     e.preventDefault();
@@ -229,30 +220,25 @@ function handleKeydown(e) {
     return;
   }
 
-  if (key.length !== 1) {
-    return;
-  }
+  if (key.length !== 1) return;
 
-  if (!state.session.startedAt) {
-    startSession();
-  }
+  if (!state.session.startedAt) startSession();
 
   const expected = state.text[state.cursorPos];
   if (expected === undefined) return;
 
   const now = performance.now();
-  const normalizedKey = key === " " ? " " : key;
+  const pressed = key === " " ? " " : key;
   const rt = computeReactionTime(now);
 
-  updateCharStats(expected, normalizedKey, rt);
+  const correct = (pressed === expected);
+  updateCharStats(expected, pressed, rt, correct);
 
-  if (normalizedKey === expected) {
+  if (correct) {
     state.cursorPos += 1;
   } else {
     state.session.errors += 1;
-    if (state.settings.soundOnError) {
-      playErrorSound();
-    }
+    if (state.settings.soundOnError) playErrorSound();
   }
 
   state.session.keystrokes += 1;
@@ -264,128 +250,144 @@ function handleKeydown(e) {
   }
 
   updateElapsed();
-  evaluateProgression();
+  maybeSampleCharts();
+  maybeUnlockNextKey();     // <-- one-key progression
+  chooseFocusKey();         // <-- keeps practice targeted if you struggle
+
   saveState();
   renderAll();
 }
 
-/* PROGRESSION / REGRESSION */
+/* ---------- One-key progression ---------- */
 
-function evaluateProgression() {
-  const oldStage = state.currentStageIndex;
+function normalizeUnlockIndex() {
+  // Ensure nextUnlockIndex points to the first not-yet-unlocked key in UNLOCK_ORDER
+  const unlockedSet = new Set(state.unlocked.split(""));
+  let idx = 0;
+  while (idx < UNLOCK_ORDER.length && unlockedSet.has(UNLOCK_ORDER[idx])) idx++;
+  state.nextUnlockIndex = idx;
+}
 
-  maybeAdvanceStage();
-  maybeRegressStage();
+function getNewestUnlockedKey() {
+  // newest unlocked is the last item in UNLOCK_ORDER that is already in unlocked, otherwise fallback
+  const unlockedSet = new Set(state.unlocked.split(""));
+  for (let i = UNLOCK_ORDER.length - 1; i >= 0; i--) {
+    if (unlockedSet.has(UNLOCK_ORDER[i])) return UNLOCK_ORDER[i];
+  }
+  return state.unlocked[state.unlocked.length - 1] || null;
+}
 
-  if (state.currentStageIndex !== oldStage) {
-    state.unlockedChars = computeUnlockedCharsUpTo(state.currentStageIndex);
-    prepareNewestStageSet();
+function recentAccuracyForKey(ch) {
+  const s = state.charStats[ch];
+  if (!s || !s.recent || s.recent.length === 0) return null;
+  const sum = s.recent.reduce((a, b) => a + b, 0);
+  return sum / s.recent.length;
+}
+
+function isKeyMastered(ch) {
+  const s = state.charStats[ch];
+  if (!s || s.attempts < PROGRESSION.minAttempts) return false;
+  const r = recentAccuracyForKey(ch);
+  if (r === null) return false;
+  return r >= PROGRESSION.minRecentAccuracy;
+}
+
+function maybeUnlockNextKey() {
+  // If we’re out of keys, stop.
+  if (state.nextUnlockIndex >= UNLOCK_ORDER.length) return;
+
+  // Mastery is judged on the newest unlocked key.
+  const newest = getNewestUnlockedKey();
+  if (!newest) return;
+
+  if (isKeyMastered(newest)) {
+    const next = UNLOCK_ORDER[state.nextUnlockIndex];
+    state.unlocked = unionChars(state.unlocked, next);
+    state.focusKey = next;
+    state.nextUnlockIndex += 1;
     generateNewText();
     state.cursorPos = 0;
   }
 }
 
-function maybeAdvanceStage() {
-  const stageIndex = state.currentStageIndex;
-  if (stageIndex >= KEY_STAGES.length - 1) return;
+function chooseFocusKey() {
+  // If your unlocked set starts dropping below maintain accuracy, focus weak key (no regression/locking).
+  const unlockedChars = state.unlocked.split("");
+  let weakest = null;
+  let weakestAcc = Infinity;
 
-  const currentStage = KEY_STAGES[stageIndex];
-  const chars = currentStage.keys.split("");
-
-  for (let i = 0; i < chars.length; i++) {
-    const ch = chars[i];
-    const stat = state.charStats[ch];
-    if (!stat || stat.attempts < PROGRESSION_CONFIG.minAttemptsPerChar) return;
-    const acc = (stat.attempts - stat.errors) / stat.attempts;
-    if (acc < PROGRESSION_CONFIG.minAccuracy) return;
-  }
-
-  state.currentStageIndex += 1;
-}
-
-function maybeRegressStage() {
-  const stageIndex = state.currentStageIndex;
-  if (stageIndex <= 0) return;
-
-  const currentStage = KEY_STAGES[stageIndex];
-  const chars = currentStage.keys.split("");
-
-  let shouldRegress = false;
-
-  for (let i = 0; i < chars.length; i++) {
-    const ch = chars[i];
-    const stat = state.charStats[ch];
-    if (!stat || stat.attempts < PROGRESSION_CONFIG.regressMinAttemptsPerChar) {
-      continue;
-    }
-    const acc = (stat.attempts - stat.errors) / stat.attempts;
-    if (acc < PROGRESSION_CONFIG.regressAccuracy) {
-      shouldRegress = true;
-      break;
+  for (const ch of unlockedChars) {
+    const r = recentAccuracyForKey(ch);
+    if (r === null) continue;
+    if (r < weakestAcc) {
+      weakestAcc = r;
+      weakest = ch;
     }
   }
 
-  if (shouldRegress) {
-    state.currentStageIndex -= 1;
+  if (weakest !== null && weakestAcc < PROGRESSION.maintainRecentAccuracy) {
+    state.focusKey = weakest;
+  } else {
+    // Otherwise focus newest unlocked (feels like keybr)
+    state.focusKey = getNewestUnlockedKey();
   }
 }
 
-// unlocked chars = union of keys from all stages up to stageIndex inclusive
-function computeUnlockedCharsUpTo(stageIndex) {
-  const set = new Set();
-  for (let i = 0; i <= stageIndex && i < KEY_STAGES.length; i++) {
-    KEY_STAGES[i].keys.split("").forEach((ch) => set.add(ch));
+/* ---------- Stats ---------- */
+
+function ensureCharStat(ch) {
+  if (!state.charStats[ch]) {
+    state.charStats[ch] = {
+      attempts: 0,
+      errors: 0,
+      totalRT: 0,
+      rtSamples: 0,
+      recent: []
+    };
   }
-  return Array.from(set).join("");
 }
 
-/* STATS & SESSION */
+function updateCharStats(expected, pressed, rt, correct) {
+  ensureCharStat(expected);
+  ensureCharStat(pressed);
+
+  // expected key stats
+  const s = state.charStats[expected];
+  s.attempts += 1;
+  if (!correct) s.errors += 1;
+  if (rt !== null) {
+    s.totalRT += rt;
+    s.rtSamples += 1;
+  }
+  pushRecent(expected, correct ? 1 : 0);
+
+  // pressed key stats (only meaningful if wrong; still record as “bad press”)
+  if (!correct && pressed !== expected) {
+    const p = state.charStats[pressed];
+    p.attempts += 1;
+    p.errors += 1;
+    if (rt !== null) {
+      p.totalRT += rt;
+      p.rtSamples += 1;
+    }
+    pushRecent(pressed, 0);
+  }
+}
+
+function pushRecent(ch, val) {
+  const s = state.charStats[ch];
+  s.recent.push(val);
+  if (s.recent.length > PROGRESSION.recentWindow) {
+    s.recent.shift();
+  }
+}
 
 function computeReactionTime(now) {
   const sess = state.session;
   if (!sess.lastKeyTime) return null;
-
   const rt = now - sess.lastKeyTime;
   if (rt < 50 || rt > 8000) return null;
   return rt;
-}
-
-function updateCharStats(expected, pressed, rt) {
-  const charsToUpdate = new Set([expected]);
-  if (pressed !== expected) {
-    charsToUpdate.add(pressed);
-  }
-
-  charsToUpdate.forEach((ch) => {
-    if (!state.charStats[ch]) {
-      state.charStats[ch] = {
-        attempts: 0,
-        errors: 0,
-        totalRT: 0,
-        rtSamples: 0
-      };
-    }
-  });
-
-  const stat = state.charStats[expected];
-  stat.attempts += 1;
-  if (pressed !== expected) {
-    stat.errors += 1;
-  }
-  if (rt !== null) {
-    stat.totalRT += rt;
-    stat.rtSamples += 1;
-  }
-
-  if (pressed !== expected) {
-    const ps = state.charStats[pressed];
-    ps.attempts += 1;
-    ps.errors += 1;
-    if (rt !== null) {
-      ps.totalRT += rt;
-      ps.rtSamples += 1;
-    }
-  }
 }
 
 function startSession() {
@@ -395,6 +397,7 @@ function startSession() {
   state.session.elapsedMs = 0;
   state.session.keystrokes = 0;
   state.session.errors = 0;
+  state.session.samples = [];
 }
 
 function resetSession() {
@@ -403,112 +406,90 @@ function resetSession() {
   state.session.elapsedMs = 0;
   state.session.keystrokes = 0;
   state.session.errors = 0;
+  state.session.samples = [];
 }
 
-function endSession() {
-  // later: store session history
-}
+function endSession() { /* later */ }
 
 function updateElapsed() {
   if (!state.session.startedAt) return;
-  const now = performance.now();
-  state.session.elapsedMs = now - state.session.startedAt;
+  state.session.elapsedMs = performance.now() - state.session.startedAt;
 }
 
-/* TEXT GENERATION */
+/* ---------- Text generation ---------- */
 
 function generateNewText() {
-  const activeChars = state.unlockedChars;
-  const newestSet = state.newestStageChars;
+  const active = state.unlocked;
   const wordCount = 8;
   const words = [];
   for (let i = 0; i < wordCount; i++) {
-    const len = randInt(3, 7);
-    words.push(generatePseudoWord(activeChars, newestSet, len));
+    words.push(generatePseudoWord(active, randInt(3, 7)));
   }
   state.text = words.join(" ");
 }
 
-function generatePseudoWord(activeChars, newestSet, length) {
+function generatePseudoWord(activeChars, length) {
   let word = "";
-  let lastChar = null;
+  let last = null;
   for (let i = 0; i < length; i++) {
-    const ch = weightedPickChar(activeChars, newestSet, lastChar);
-    word += ch;
-    lastChar = ch;
+    word += pickWeightedChar(activeChars, last);
+    last = word[word.length - 1];
   }
   return word;
 }
 
-function weightedPickChar(chars, newestSet, lastChar) {
-  const arr = chars.split("");
-  const weights = [];
+function pickWeightedChar(activeChars, lastChar) {
+  const chars = activeChars.split("");
+  const focus = state.focusKey;
   let total = 0;
+  const weights = [];
 
-  for (let i = 0; i < arr.length; i++) {
-    const ch = arr[i];
+  for (const ch of chars) {
     let w = 1;
 
-    const stat = state.charStats[ch];
-    if (!stat || stat.attempts < 10) {
-      w += 1.5;
-    } else {
-      const acc = (stat.attempts - stat.errors) / stat.attempts;
-      w += (1 - acc) * 3;
-    }
+    // strongly emphasize focusKey (newest or weakest)
+    if (focus && ch === focus) w += 5;
 
-    if (newestSet.has(ch)) {
+    const s = state.charStats[ch];
+    if (!s || s.attempts < 10) {
       w += 2;
+    } else {
+      const r = recentAccuracyForKey(ch);
+      if (r !== null) w += (1 - r) * 6;
     }
 
-    if (ch === lastChar) {
-      w *= 0.6;
-    }
+    if (ch === lastChar) w *= 0.6;
 
     weights.push(w);
     total += w;
   }
 
   let r = Math.random() * total;
-  for (let i = 0; i < arr.length; i++) {
+  for (let i = 0; i < chars.length; i++) {
     r -= weights[i];
-    if (r <= 0) return arr[i];
+    if (r <= 0) return chars[i];
   }
-  return arr[arr.length - 1];
+  return chars[chars.length - 1];
 }
 
-/* PERSISTENCE */
+/* ---------- Persistence ---------- */
 
 function loadState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return;
     const data = JSON.parse(raw);
+
     state = {
       ...state,
       ...data,
-      session: {
-        ...state.session
-      }
+      session: { ...state.session }, // don’t restore running session timing
+      settings: { ...state.settings, ...(data.settings || {}) }
     };
 
-    if (typeof state.currentStageIndex !== "number") {
-      state.currentStageIndex = 0;
-    }
-    if (!state.settings) {
-      state.settings = {
-        soundOnError: false,
-        backspaceMode: "discouraged",
-        fontSize: 32,
-        keyboardLayout: "normal"
-      };
-    } else {
-      if (!state.settings.fontSize) state.settings.fontSize = 32;
-      if (!state.settings.keyboardLayout) state.settings.keyboardLayout = "normal";
-    }
-    if (!state.unlockedChars) {
-      state.unlockedChars = computeUnlockedCharsUpTo(state.currentStageIndex);
-    }
+    // sanitize
+    if (!state.unlocked || typeof state.unlocked !== "string") state.unlocked = START_UNLOCKED;
+    if (!state.charStats || typeof state.charStats !== "object") state.charStats = {};
   } catch (e) {
     console.warn("Failed to load state:", e);
   }
@@ -516,8 +497,9 @@ function loadState() {
 
 function saveState() {
   const toSave = {
-    currentStageIndex: state.currentStageIndex,
-    unlockedChars: state.unlockedChars,
+    unlocked: state.unlocked,
+    nextUnlockIndex: state.nextUnlockIndex,
+    focusKey: state.focusKey,
     charStats: state.charStats,
     settings: state.settings
   };
@@ -528,12 +510,7 @@ function saveState() {
   }
 }
 
-function prepareNewestStageSet() {
-  const stage = KEY_STAGES[state.currentStageIndex];
-  state.newestStageChars = new Set(stage.keys.split(""));
-}
-
-/* RENDERING */
+/* ---------- Rendering ---------- */
 
 function renderAll() {
   renderStageInfo();
@@ -541,12 +518,14 @@ function renderAll() {
   renderSessionStats();
   renderCharStats();
   renderKeyboardDynamic();
+  renderCharts();
 }
 
 function renderStageInfo() {
-  const stage = KEY_STAGES[state.currentStageIndex];
-  dom.stageName.textContent = stage.name;
-  dom.activeKeys.textContent = state.unlockedChars.split("").join(" ");
+  const next = (state.nextUnlockIndex < UNLOCK_ORDER.length) ? UNLOCK_ORDER[state.nextUnlockIndex] : "Done";
+  const focusLabel = state.focusKey ? `Focus: ${state.focusKey.toUpperCase()}` : "Focus: -";
+  dom.stageName.textContent = `${focusLabel} | Next unlock: ${next === "Done" ? "Done" : next.toUpperCase()}`;
+  dom.activeKeys.textContent = state.unlocked.split("").join(" ");
 }
 
 function renderText() {
@@ -557,31 +536,23 @@ function renderText() {
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
     const span = document.createElement("span");
-    span.textContent = ch;
+    span.textContent = (ch === " ") ? "·" : ch;
     span.classList.add("char");
-    if (ch === " ") {
-      span.classList.add("space");
-      span.textContent = "·";
-    }
+    if (ch === " ") span.classList.add("space");
 
-    if (i < cursor) {
-      span.classList.add("correct");
-    } else if (i === cursor) {
-      span.classList.add("current");
-    } else {
-      span.classList.add("upcoming");
-    }
+    if (i < cursor) span.classList.add("correct");
+    else if (i === cursor) span.classList.add("current");
+    else span.classList.add("upcoming");
+
     frag.appendChild(span);
   }
 
   dom.generatedText.innerHTML = "";
   dom.generatedText.appendChild(frag);
-
   dom.generatedText.style.fontSize = state.settings.fontSize + "px";
 
   dom.cursorPosition.textContent = `Position: ${cursor}/${text.length}`;
-  const percent = text.length === 0 ? 0 : Math.round((cursor / text.length) * 100);
-  dom.progressPercent.textContent = `Block: ${percent}%`;
+  dom.progressPercent.textContent = `Unlocked: ${state.unlocked.length} keys`;
 }
 
 function renderSessionStats() {
@@ -596,8 +567,7 @@ function renderSessionStats() {
 
   if (elapsedSec > 1 && state.session.keystrokes > 0) {
     grossWpm = (state.session.keystrokes / 5) / Math.max(minutes, 1 / 60);
-    accuracy =
-      (state.session.keystrokes - state.session.errors) / state.session.keystrokes;
+    accuracy = (state.session.keystrokes - state.session.errors) / state.session.keystrokes;
     netWpm = grossWpm * accuracy;
   }
 
@@ -612,21 +582,20 @@ function renderCharStats() {
   const chars = Array.from(new Set(Object.keys(state.charStats))).sort();
   dom.charStatsBody.innerHTML = "";
 
-  chars.forEach((ch) => {
-    const stat = state.charStats[ch];
+  for (const ch of chars) {
+    const s = state.charStats[ch];
+    const acc = s.attempts ? (s.attempts - s.errors) / s.attempts : 1;
+    const avgRT = s.rtSamples ? (s.totalRT / s.rtSamples) : 0;
+    const rAcc = recentAccuracyForKey(ch);
+
     const tr = document.createElement("tr");
-
-    const acc = stat.attempts
-      ? (stat.attempts - stat.errors) / stat.attempts
-      : 1;
-    const avgRT = stat.rtSamples ? stat.totalRT / stat.rtSamples : 0;
-
     const cells = [
       ch === " " ? "␣" : ch,
-      stat.attempts,
-      stat.errors,
+      s.attempts,
+      s.errors,
       `${(acc * 100).toFixed(1)}%`,
-      avgRT ? avgRT.toFixed(0) : "–"
+      avgRT ? avgRT.toFixed(0) : "–",
+      rAcc === null ? "–" : `${(rAcc * 100).toFixed(1)}%`
     ];
 
     cells.forEach((val) => {
@@ -636,121 +605,214 @@ function renderCharStats() {
     });
 
     dom.charStatsBody.appendChild(tr);
-  });
+  }
 }
 
-/* ON-SCREEN KEYBOARD */
+/* ---------- Charts ---------- */
+
+function maybeSampleCharts() {
+  if (!state.session.startedAt) return;
+
+  const elapsedSec = state.session.elapsedMs / 1000;
+  const last = state.session.samples[state.session.samples.length - 1];
+  if (last && (elapsedSec - last.tSec) < 1.0) return; // ~1 sample/sec
+
+  // compute current stats snapshot
+  const minutes = elapsedSec / 60;
+  const ks = state.session.keystrokes;
+  const errs = state.session.errors;
+
+  let grossWpm = 0;
+  let acc = 1;
+  let netWpm = 0;
+
+  if (elapsedSec > 1 && ks > 0) {
+    grossWpm = (ks / 5) / Math.max(minutes, 1 / 60);
+    acc = (ks - errs) / ks;
+    netWpm = grossWpm * acc;
+  }
+
+  state.session.samples.push({
+    tSec: elapsedSec,
+    grossWpm,
+    netWpm,
+    acc
+  });
+
+  // cap memory a bit
+  if (state.session.samples.length > 1200) {
+    state.session.samples.shift();
+  }
+}
+
+function renderCharts() {
+  drawLineChart(dom.chartWpm, state.session.samples, "tSec", "netWpm", 0, 160);
+  drawLineChart(dom.chartAcc, state.session.samples, "tSec", "acc", 0, 1);
+}
+
+function drawLineChart(canvas, samples, xKey, yKey, yMin, yMax) {
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width;
+  const h = canvas.height;
+
+  // clear
+  ctx.clearRect(0, 0, w, h);
+
+  // background
+  ctx.fillStyle = "#020617";
+  ctx.fillRect(0, 0, w, h);
+
+  // axes padding
+  const padL = 44;
+  const padR = 12;
+  const padT = 10;
+  const padB = 26;
+
+  // grid
+  ctx.strokeStyle = "rgba(148,163,184,0.18)";
+  ctx.lineWidth = 1;
+
+  for (let i = 0; i <= 4; i++) {
+    const y = padT + (i * (h - padT - padB)) / 4;
+    ctx.beginPath();
+    ctx.moveTo(padL, y);
+    ctx.lineTo(w - padR, y);
+    ctx.stroke();
+  }
+
+  // no data
+  if (!samples || samples.length < 2) {
+    ctx.fillStyle = "rgba(148,163,184,0.7)";
+    ctx.font = "14px system-ui";
+    ctx.fillText("Start typing to populate the chart", padL, h / 2);
+    return;
+  }
+
+  const x0 = samples[0][xKey];
+  const x1 = samples[samples.length - 1][xKey];
+  const xSpan = Math.max(1e-6, x1 - x0);
+
+  const plotW = (w - padL - padR);
+  const plotH = (h - padT - padB);
+
+  // line
+  ctx.strokeStyle = "rgba(59,130,246,0.95)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+
+  for (let i = 0; i < samples.length; i++) {
+    const xVal = samples[i][xKey];
+    const yValRaw = samples[i][yKey];
+
+    const yVal = Math.max(yMin, Math.min(yMax, yValRaw));
+    const px = padL + ((xVal - x0) / xSpan) * plotW;
+    const py = padT + (1 - (yVal - yMin) / (yMax - yMin)) * plotH;
+
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+
+  ctx.stroke();
+
+  // labels (very light)
+  ctx.fillStyle = "rgba(148,163,184,0.85)";
+  ctx.font = "12px system-ui";
+
+  const yLabelTop = (yKey === "acc") ? "100%" : `${Math.round(yMax)}`;
+  const yLabelBot = (yKey === "acc") ? "0%" : `${Math.round(yMin)}`;
+
+  ctx.fillText(yLabelTop, 10, 16);
+  ctx.fillText(yLabelBot, 10, h - 10);
+
+  ctx.fillText(`${Math.round(x0)}s`, padL, h - 8);
+  ctx.fillText(`${Math.round(x1)}s`, w - padR - 34, h - 8);
+}
+
+/* ---------- Keyboard ---------- */
 
 function buildKeyboardBase() {
   if (!dom.keyboardVisual) return;
   dom.keyboardVisual.innerHTML = "";
 
   const layoutKey = state.settings.keyboardLayout || "normal";
-  const layout = KEYBOARD_LAYOUTS[layoutKey] || KEYBOARD_LAYOUTS["normal"];
+  const layout = KEYBOARD_LAYOUTS[layoutKey] || KEYBOARD_LAYOUTS.normal;
 
   if (layout.type === "normal") {
-    NORMAL_KEYBOARD_ROWS.forEach((row) => {
+    for (const row of NORMAL_KEYBOARD_ROWS) {
       const rowDiv = document.createElement("div");
       rowDiv.classList.add("keyboard-row");
-
-      row.forEach((key) => {
-        const keyDiv = document.createElement("div");
-        keyDiv.classList.add("key");
-        keyDiv.dataset.key = key;
-        keyDiv.textContent = key.toUpperCase();
-
-        if ("asdfjkl;".includes(key)) {
-          keyDiv.classList.add("key-home");
-        }
-
-        rowDiv.appendChild(keyDiv);
-      });
-
+      for (const key of row) rowDiv.appendChild(createKeyDiv(key));
       dom.keyboardVisual.appendChild(rowDiv);
-    });
-
-    // Spacebar row
-    const spaceRow = document.createElement("div");
-    spaceRow.classList.add("keyboard-row");
-    const spaceKey = document.createElement("div");
-    spaceKey.classList.add("key", "key-space");
-    spaceKey.dataset.key = " ";
-    spaceKey.textContent = "Space";
-    spaceRow.appendChild(spaceKey);
-    dom.keyboardVisual.appendChild(spaceRow);
+    }
+    dom.keyboardVisual.appendChild(createSpaceRow());
     return;
   }
 
-  // Split-straight layout
-  const splitContainer = document.createElement("div");
-  splitContainer.classList.add("keyboard-split");
+  // split straight
+  const split = document.createElement("div");
+  split.classList.add("keyboard-split");
 
   const leftCol = document.createElement("div");
   leftCol.classList.add("keyboard-col");
+  for (const row of SPLIT_LEFT_ROWS) {
+    const rowDiv = document.createElement("div");
+    rowDiv.classList.add("keyboard-row");
+    for (const key of row) rowDiv.appendChild(createKeyDiv(key));
+    leftCol.appendChild(rowDiv);
+  }
 
   const rightCol = document.createElement("div");
   rightCol.classList.add("keyboard-col");
-
-  SPLIT_LEFT_ROWS.forEach((row) => {
+  for (const row of SPLIT_RIGHT_ROWS) {
     const rowDiv = document.createElement("div");
     rowDiv.classList.add("keyboard-row");
-    row.forEach((key) => {
-      const keyDiv = document.createElement("div");
-      keyDiv.classList.add("key");
-      keyDiv.dataset.key = key;
-      keyDiv.textContent = key.toUpperCase();
-      if ("asdfjkl;".includes(key)) {
-        keyDiv.classList.add("key-home");
-      }
-      rowDiv.appendChild(keyDiv);
-    });
-    leftCol.appendChild(rowDiv);
-  });
-
-  SPLIT_RIGHT_ROWS.forEach((row) => {
-    const rowDiv = document.createElement("div");
-    rowDiv.classList.add("keyboard-row");
-    row.forEach((key) => {
-      const keyDiv = document.createElement("div");
-      keyDiv.classList.add("key");
-      keyDiv.dataset.key = key;
-      keyDiv.textContent = key.toUpperCase();
-      if ("asdfjkl;".includes(key)) {
-        keyDiv.classList.add("key-home");
-      }
-      rowDiv.appendChild(keyDiv);
-    });
+    for (const key of row) rowDiv.appendChild(createKeyDiv(key));
     rightCol.appendChild(rowDiv);
-  });
+  }
 
-  splitContainer.appendChild(leftCol);
-  splitContainer.appendChild(rightCol);
+  split.appendChild(leftCol);
+  split.appendChild(rightCol);
 
-  // Spacebar under both halves
-  const spaceRow = document.createElement("div");
-  spaceRow.classList.add("keyboard-row");
-  const spaceKey = document.createElement("div");
-  spaceKey.classList.add("key", "key-space");
-  spaceKey.dataset.key = " ";
-  spaceKey.textContent = "Space";
-  spaceRow.appendChild(spaceKey);
+  dom.keyboardVisual.appendChild(split);
+  dom.keyboardVisual.appendChild(createSpaceRow());
+}
 
-  dom.keyboardVisual.appendChild(splitContainer);
-  dom.keyboardVisual.appendChild(spaceRow);
+function createKeyDiv(key) {
+  const keyDiv = document.createElement("div");
+  keyDiv.classList.add("key");
+  keyDiv.dataset.key = key;
+  keyDiv.textContent = key.toUpperCase();
+
+  if ("asdfjkl;".includes(key)) keyDiv.classList.add("key-home");
+  return keyDiv;
+}
+
+function createSpaceRow() {
+  const row = document.createElement("div");
+  row.classList.add("keyboard-row");
+  const space = document.createElement("div");
+  space.classList.add("key", "key-space");
+  space.dataset.key = " ";
+  space.textContent = "Space";
+  row.appendChild(space);
+  return row;
 }
 
 function renderKeyboardDynamic() {
   if (!dom.keyboardVisual) return;
-  const keys = dom.keyboardVisual.querySelectorAll(".key");
-  const unlockedSet = new Set(state.unlockedChars.split(""));
-  const currentChar = state.text[state.cursorPos] || null;
 
+  const unlockedSet = new Set(state.unlocked.split(""));
+  const currentChar = state.text[state.cursorPos] || null;
+  const focus = state.focusKey;
+
+  const keys = dom.keyboardVisual.querySelectorAll(".key");
   keys.forEach((el) => {
     const ch = el.dataset.key;
-    if (ch === undefined) return;
 
     el.classList.remove("key-unlocked", "key-locked", "key-current");
 
+    // unlocked/locked styling
     if (ch === " ") {
       el.classList.add("key-unlocked");
     } else if (unlockedSet.has(ch)) {
@@ -759,13 +821,58 @@ function renderKeyboardDynamic() {
       el.classList.add("key-locked");
     }
 
+    // current target highlight
     if (currentChar && ch === currentChar) {
       el.classList.add("key-current");
+    }
+
+    // Heatmap: tint unlocked keys based on recent accuracy
+    // We do this with inline background so it doesn’t fight the base classes too much.
+    if (ch !== " " && unlockedSet.has(ch)) {
+      const rAcc = recentAccuracyForKey(ch);
+      if (rAcc !== null) {
+        // map acc 0.7..1.0 to lightness 18..34 (still dark UI)
+        const clamped = Math.max(0.7, Math.min(1.0, rAcc));
+        const light = 18 + (clamped - 0.7) * (34 - 18) / 0.3; // 18..34
+        // bluish hue; lower accuracy = darker
+        el.style.background = `hsl(221 70% ${light}%)`;
+      } else {
+        el.style.background = "";
+      }
+    } else {
+      el.style.background = "";
+    }
+
+    // Slight extra cue for focus key
+    if (focus && ch === focus) {
+      el.style.boxShadow = "0 0 0 2px rgba(59,130,246,0.6)";
+    } else if (!el.classList.contains("key-current")) {
+      el.style.boxShadow = "";
     }
   });
 }
 
-/* UTILITIES */
+/* ---------- Utilities ---------- */
+
+function renderAllStartupSafe() { /* not used */ }
+
+function unionChars(a, b) {
+  const set = new Set(a.split(""));
+  b.split("").forEach((ch) => set.add(ch));
+  return Array.from(set).join("");
+}
+
+function randInt(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function applySettingsToUI() {
+  dom.settingSoundError.checked = !!state.settings.soundOnError;
+  dom.settingBackspaceMode.value = state.settings.backspaceMode || "discouraged";
+  dom.settingFontSize.value = state.settings.fontSize || 34;
+  dom.generatedText.style.fontSize = (state.settings.fontSize || 34) + "px";
+  dom.settingKeyboardLayout.value = state.settings.keyboardLayout || "normal";
+}
 
 function playErrorSound() {
   try {
@@ -791,16 +898,4 @@ function playErrorSound() {
   } catch (e) {
     console.warn("Error sound failed:", e);
   }
-}
-
-function randInt(min, max) {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-
-function applySettingsToUI() {
-  dom.settingSoundError.checked = !!state.settings.soundOnError;
-  dom.settingBackspaceMode.value = state.settings.backspaceMode || "discouraged";
-  dom.settingFontSize.value = state.settings.fontSize || 32;
-  dom.generatedText.style.fontSize = (state.settings.fontSize || 32) + "px";
-  dom.settingKeyboardLayout.value = state.settings.keyboardLayout || "normal";
 }
