@@ -19,13 +19,16 @@
     return (60000 / (targetWpm * 5)) / timeToType;
   }
 
+  // The confidence the unlock and focus rules use: best speed ever, or current
+  // speed when "recover keys" is on. The UI shows this same value.
+  function keyConfidence(keyStat, { targetWpm, recoverKeys }) {
+    if (!keyStat) return null;
+    return confidence(recoverKeys ? keyStat.timeToType : keyStat.bestTimeToType, targetWpm);
+  }
+
   function updateProgression({ unlocked, keyStats, targetWpm, recoverKeys }) {
     const set = new Set(START_KEYS.concat(unlocked || []));
-    const conf = (ch) => {
-      const k = keyStats[ch];
-      if (!k) return 0;
-      return confidence(recoverKeys ? k.timeToType : k.bestTimeToType, targetWpm) || 0;
-    };
+    const conf = (ch) => keyConfidence(keyStats[ch], { targetWpm, recoverKeys }) || 0;
     const letters = () => SEQUENCE.filter((ch) => set.has(ch) && !PUNCT.has(ch));
 
     const newlyUnlocked = [];
@@ -49,5 +52,5 @@
     return { unlocked: SEQUENCE.filter((ch) => set.has(ch)), focus, newlyUnlocked };
   }
 
-  Object.assign(LTT, { START_KEYS, UNLOCK_ORDER, confidence, updateProgression });
+  Object.assign(LTT, { START_KEYS, UNLOCK_ORDER, confidence, keyConfidence, updateProgression });
 })((globalThis.LTT = globalThis.LTT || {}));

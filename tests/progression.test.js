@@ -94,3 +94,19 @@ test("raising the target never removes keys", () => {
   for (const k of unlocked) assert.ok(r.unlocked.includes(k));
   assert.deepStrictEqual(r.newlyUnlocked, []);
 });
+
+test("displayConfidence matches the measure the unlock rules use", () => {
+  const ks = {};
+  LTT.addLessonToKeyStats(ks, hist({ a: 300 }), 1, 1);
+  for (let i = 0; i < 30; i++) LTT.addLessonToKeyStats(ks, hist({ a: 2000 }), 2 + i, 2 + i);
+  const best = LTT.confidence(ks.a.bestTimeToType, 35);
+  const cur = LTT.confidence(ks.a.timeToType, 35);
+  assert.strictEqual(LTT.keyConfidence(ks.a, { targetWpm: 35, recoverKeys: false }), best);
+  assert.strictEqual(LTT.keyConfidence(ks.a, { targetWpm: 35, recoverKeys: true }), cur);
+  assert.strictEqual(LTT.keyConfidence(undefined, { targetWpm: 35, recoverKeys: false }), null);
+});
+
+test("package license matches keybr's AGPL-3.0 (only)", () => {
+  const pkg = require("../package.json");
+  assert.strictEqual(pkg.license, "AGPL-3.0-only");
+});

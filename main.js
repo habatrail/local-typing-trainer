@@ -37,7 +37,8 @@
   function saveNow() {
     clearTimeout(saveTimer);
     saveTimer = null;
-    LTT.saveState(storage, state);
+    const ok = LTT.saveState(storage, state);
+    $("save-warning").hidden = ok;
   }
   function saveSoon() {
     if (!saveTimer) saveTimer = setTimeout(saveNow, SAVE_DEBOUNCE_MS);
@@ -105,24 +106,26 @@
       true
     );
 
-    const newLetters = prog.newlyUnlocked.filter((k) => !PUNCT.has(k));
-    const newPunct = prog.newlyUnlocked.filter((k) => PUNCT.has(k));
-    if (newLetters.length || newPunct.length) {
-      const parts = [];
-      if (newLetters.length) parts.push(`New key: ${newLetters.map((k) => k.toUpperCase()).join(" ")}`);
-      if (newPunct.length) parts.push(`Punctuation unlocked: ${newPunct.join(" ")}`);
-      showBanner(parts.join(" · "));
-    } else {
-      showBanner(null);
-    }
+    announceUnlocks(prog.newlyUnlocked);
     startNewLesson();
+  }
+
+  function announceUnlocks(newlyUnlocked) {
+    const newLetters = newlyUnlocked.filter((k) => !PUNCT.has(k));
+    const newPunct = newlyUnlocked.filter((k) => PUNCT.has(k));
+    const parts = [];
+    if (newLetters.length) parts.push(`New key: ${newLetters.map((k) => k.toUpperCase()).join(" ")}`);
+    if (newPunct.length) parts.push(`Punctuation unlocked: ${newPunct.join(" ")}`);
+    showBanner(parts.length ? parts.join(" · ") : null);
+    if (parts.length) streak = 0;
   }
 
   // ---------- input ----------
   function isFormTarget(t) {
     if (!t || !t.tagName) return false;
     const tag = t.tagName.toLowerCase();
-    return tag === "input" || tag === "select" || tag === "textarea" || t.isContentEditable;
+    if (tag === "input") return ["number", "text", "search"].includes(t.type);
+    return tag === "textarea" || t.isContentEditable;
   }
 
   function onKeyDown(e) {
@@ -161,8 +164,7 @@
   }
 
   function keyConf(ch) {
-    const k = state.keyStats[ch];
-    return k ? LTT.confidence(k.timeToType, state.settings.targetWpm) : null;
+    return LTT.keyConfidence(state.keyStats[ch], state.settings);
   }
 
   function nextLockedKey() {
@@ -464,7 +466,13 @@
 
   function changeSetting(key, value, { progression = false, rebuildKeyboard = false } = {}) {
     state.settings = LTT.sanitizeState({ settings: Object.assign({}, state.settings, { [key]: value }) }).settings;
-    if (progression) refreshProgression();
+    if (progression) {
+      const prog = refreshProgression();
+      if (prog.newlyUnlocked.length) {
+        announceUnlocks(prog.newlyUnlocked);
+        startNewLesson(); // new lesson so the new key gets practised
+      }
+    }
     if (rebuildKeyboard) buildKeyboard();
     applySettingsToUI();
     saveNow();
@@ -508,6 +516,12 @@
     $("set-font").addEventListener("input", (e) => changeSetting("fontSize", parseInt(e.target.value, 10)));
     $("set-layout").addEventListener("change", (e) =>
       changeSetting("keyboardLayout", e.target.value, { rebuildKeyboard: true }));
+
+    // Checkboxes, sliders and dropdowns hand focus back to the lesson, so the
+    // next keystrokes type instead of toggling the control.
+    for (const id of ["set-length", "set-recover", "set-fade", "set-sound", "set-font", "set-layout"]) {
+      $(id).addEventListener("change", () => $("typing-area").focus());
+    }
 
     $("export-btn").addEventListener("click", () => {
       saveNow();
