@@ -3,122 +3,147 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Local Keybr-Style Typing Trainer</title>
+  <title>Local Typing Trainer</title>
   <link rel="stylesheet" href="./styles.css" />
 </head>
 
 <body>
   <div class="app">
     <header class="app-header">
-      <h1>Typing Trainer (Local)</h1>
-      <div class="stage-info">
-        <div id="stage-name">Focus: - | Next: -</div>
-        <div><span id="active-keys-label">Active keys:</span> <span id="active-keys"></span></div>
-      </div>
+      <h1>Local Typing Trainer</h1>
+      <div class="key-chips" id="key-chips" aria-label="Unlocked keys"></div>
     </header>
 
     <main class="app-main">
-      <section class="typing-panel">
-        <div class="typing-header">
-          <button id="restart-session-btn" type="button">Restart Session</button>
-          <button id="new-text-btn" type="button">New Text</button>
-        </div>
-
-        <div id="typing-area" class="typing-area" tabindex="0">
-          <div id="generated-text" class="typing-text"></div>
-          <div class="hint">Click here and start typing. Backspace mode is configurable below.</div>
-          <div class="status-bar">
-            <span id="cursor-position">Position: 0/0</span>
-            <span id="progress-percent">Unlocked: 0 keys</span>
+      <section class="panel typing-panel">
+        <div class="lesson-bar">
+          <div class="live-stats">
+            <span><b id="live-wpm">0.0</b> WPM</span>
+            <span><b id="live-acc">100.0%</b> accuracy</span>
+            <span><b id="live-time">0s</b></span>
           </div>
+          <button id="skip-btn" type="button">Skip lesson</button>
         </div>
 
-        <section class="keyboard-panel">
-          <h2>Keyboard</h2>
-          <div class="keyboard" id="keyboard-visual"></div>
+        <div id="banner" class="banner" hidden></div>
+        <div id="summary" class="summary">Start typing. The lesson finishes when you reach the end of the text.</div>
 
-          <div class="keyboard-legend">
-            <span class="legend-item"><span class="legend-key legend-key-home"></span> Home row</span>
-            <span class="legend-item"><span class="legend-key legend-key-unlocked"></span> Unlocked</span>
-            <span class="legend-item"><span class="legend-key legend-key-locked"></span> Locked</span>
-            <span class="legend-item"><span class="legend-key legend-key-current"></span> Current</span>
+        <div id="typing-area" class="typing-area" tabindex="0" aria-label="Lesson text">
+          <div id="lesson-text" class="lesson-text"></div>
+        </div>
+
+        <section class="keyboard-panel" id="keyboard-panel">
+          <div class="keyboard" id="keyboard"></div>
+          <div class="legend">
+            <span><i class="sw sw-slow"></i>Below target</span>
+            <span><i class="sw sw-fast"></i>At target</span>
+            <span><i class="sw sw-nodata"></i>No data yet</span>
+            <span><i class="sw sw-focus"></i>Focus key</span>
+            <span><i class="sw sw-next"></i>Next to unlock</span>
           </div>
         </section>
       </section>
 
-      <section class="stats-panel">
-        <h2>Session Stats</h2>
-
+      <section class="panel stats-panel">
+        <h2>Progress</h2>
         <div class="stats-grid">
-          <div class="stat-item"><label>Elapsed</label><span id="stat-elapsed">0.0s</span></div>
-          <div class="stat-item"><label>Gross WPM</label><span id="stat-gross-wpm">0.0</span></div>
-          <div class="stat-item"><label>Net WPM</label><span id="stat-net-wpm">0.0</span></div>
-          <div class="stat-item"><label>Accuracy</label><span id="stat-accuracy">100.0%</span></div>
-          <div class="stat-item"><label>Keystrokes</label><span id="stat-keystrokes">0</span></div>
-          <div class="stat-item"><label>Errors</label><span id="stat-errors">0</span></div>
+          <div class="stat"><label>Lessons</label><span id="tot-lessons">0</span></div>
+          <div class="stat"><label>Practice time</label><span id="tot-time">0m</span></div>
+          <div class="stat"><label>Top speed</label><span id="tot-top">–</span></div>
+          <div class="stat"><label>Last 10 avg</label><span id="tot-avg">–</span></div>
         </div>
 
-        <div class="charts">
-          <div class="chart-card">
-            <div class="chart-title">Net WPM</div>
-            <canvas id="chart-wpm" width="900" height="220"></canvas>
-          </div>
-          <div class="chart-card">
-            <div class="chart-title">Accuracy</div>
-            <canvas id="chart-acc" width="900" height="220"></canvas>
-          </div>
+        <div class="chart-card">
+          <div class="chart-title">Speed per lesson (WPM) <span class="muted">— dashed line: target</span></div>
+          <canvas id="chart-speed" height="200"></canvas>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">Accuracy per lesson</div>
+          <canvas id="chart-acc" height="200"></canvas>
         </div>
 
-        <h2 style="margin-top: 12px;">Per-Character Stats</h2>
-        <table class="char-table">
-          <thead>
-            <tr>
-              <th>Char</th>
-              <th>Attempts</th>
-              <th>Errors</th>
-              <th>Acc</th>
-              <th>Avg RT</th>
-              <th>Recent Acc</th>
-            </tr>
-          </thead>
-          <tbody id="char-stats-body"></tbody>
-        </table>
+        <h2>Keys</h2>
+        <div class="table-wrap">
+          <table class="key-table">
+            <thead>
+              <tr>
+                <th>Key</th><th>Confidence</th><th>Speed</th><th>Best</th>
+                <th>Lessons</th><th>Hits</th><th>Misses</th><th>Accuracy</th>
+              </tr>
+            </thead>
+            <tbody id="key-table-body"></tbody>
+          </table>
+        </div>
       </section>
 
-      <section class="settings-panel">
+      <section class="panel settings-panel">
         <h2>Settings</h2>
 
-        <div class="setting-item">
-          <label>
-            <input id="setting-sound-error" type="checkbox" />
-            Sound on error
-          </label>
-        </div>
+        <label class="setting">
+          <span>Target speed (WPM)</span>
+          <input id="set-target" type="number" min="15" max="150" step="1" />
+        </label>
 
-        <div class="setting-item">
-          <label for="setting-backspace-mode">Backspace mode</label>
-          <select id="setting-backspace-mode">
-            <option value="discouraged">Discouraged (ignored)</option>
-            <option value="allowed">Allowed (moves cursor back)</option>
-          </select>
-        </div>
+        <label class="setting">
+          <span>Lesson length <output id="set-length-out"></output></span>
+          <input id="set-length" type="range" min="0" max="1" step="0.1" />
+        </label>
 
-        <div class="setting-item">
-          <label for="setting-font-size">Font size</label>
-          <input id="setting-font-size" type="range" min="22" max="56" step="1" value="34" />
-        </div>
+        <label class="setting check">
+          <input id="set-recover" type="checkbox" />
+          <span>Recover keys <small class="muted">— a key that slows down below target holds back the next unlock again</small></span>
+        </label>
 
-        <div class="setting-item">
-          <label for="setting-keyboard-layout">Keyboard layout</label>
-          <select id="setting-keyboard-layout">
+        <label class="setting check">
+          <input id="set-fade" type="checkbox" />
+          <span>Fade keyboard while typing correctly</span>
+        </label>
+
+        <label class="setting check">
+          <input id="set-sound" type="checkbox" />
+          <span>Sound on error</span>
+        </label>
+
+        <label class="setting">
+          <span>Font size</span>
+          <input id="set-font" type="range" min="22" max="56" step="1" />
+        </label>
+
+        <label class="setting">
+          <span>Keyboard layout</span>
+          <select id="set-layout">
             <option value="normal">Normal</option>
             <option value="split-straight">Split (straight)</option>
           </select>
+        </label>
+
+        <h2>Your data</h2>
+        <p class="muted small">Progress is saved in this browser automatically. Export a copy to keep it safe or move it to another browser.</p>
+        <div class="data-buttons">
+          <button id="export-btn" type="button">Export progress</button>
+          <button id="import-btn" type="button">Import progress</button>
+          <input id="import-file" type="file" accept="application/json,.json" hidden />
+          <button id="reset-btn" type="button" class="danger">Reset progress</button>
         </div>
       </section>
     </main>
+
+    <footer class="footer muted small">
+      Progression rules, word model and word list adapted from
+      <a href="https://github.com/aradzie/keybr.com">keybr.com</a> (AGPL-3.0).
+      This project is AGPL-3.0 licensed.
+    </footer>
   </div>
 
+  <script src="./data/model-en.js"></script>
+  <script src="./data/words-en.js"></script>
+  <script src="./data/blacklist-en.js"></script>
+  <script src="./js/phonetic.js"></script>
+  <script src="./js/text.js"></script>
+  <script src="./js/lesson.js"></script>
+  <script src="./js/keystats.js"></script>
+  <script src="./js/progression.js"></script>
+  <script src="./js/storage.js"></script>
   <script src="./main.js"></script>
 </body>
 </html>
