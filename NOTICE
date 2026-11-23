@@ -1,0 +1,23 @@
+Local Typing Trainer
+Copyright (c) 2025-2026 Max Benson Bonnell
+Licensed under the GNU Affero General Public License v3.0 (see LICENSE).
+
+This project reuses data from, and reimplements algorithms of, keybr.com:
+  https://github.com/aradzie/keybr.com
+  Copyright (c) Aleksei Radzievskii
+  Licensed under the GNU Affero General Public License v3.0
+
+Taken from keybr.com (unmodified, in data/raw/, embedded into data/*.js):
+  - English phonetic model   packages/keybr-phonetic-model/assets/model-en.data
+  - English word list        packages/keybr-content-words/lib/data/words-en.json
+  - English word blacklist   packages/keybr-phonetic-model/lib/blacklist/blacklist-en.json
+
+Reimplemented in plain JavaScript from keybr.com's source:
+  - js/phonetic.js   phonetic model reader, word generator, blacklist censor
+  - js/text.js       guided-lesson word selection and punctuation
+  - js/lesson.js     per-key timing and miss rules (histogram)
+  - js/keystats.js   smoothed per-key speed
+  - js/progression.js  confidence-based key unlocking and focus
+
+Original to this project: home-row start and unlock order, permanent unlocks,
+reload-safe persistence, import/export, and the user interface.
